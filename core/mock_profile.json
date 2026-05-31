@@ -1,0 +1,10 @@
+{
+  "citizen_id": "character_male_base",
+  "gender": "male",
+  "height_scale": 1.0,
+  "width_scale": 1.0,
+  "skin_tone": [0.9, 0.7, 0.55, 1.0],
+  "shirt_color": [0.8, 0.2, 0.2, 1.0],
+  "pants_color": [0.1, 0.3, 0.8, 1.0],
+  "attachment_file": "library/attachments/README.md"
+}

@@ -1,0 +1,10 @@
+{
+  "citizen_id": "character_female_base",
+  "gender": "female",
+  "height_scale": 1.0,
+  "width_scale": 1.0,
+  "skin_tone": [0.9, 0.75, 0.65, 1.0],
+  "shirt_color": [0.2, 0.7, 0.3, 1.0],
+  "pants_color": [0.7, 0.2, 0.7, 1.0],
+  "attachment_file": "library/attachments/README.md"
+}

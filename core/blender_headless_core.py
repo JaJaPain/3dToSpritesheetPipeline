@@ -232,17 +232,31 @@ def main():
     target_mesh = None
     armature_obj = None
     
-    # Load template .blend scene if exists
+    # Load template scene if exists
     if args.template and os.path.exists(args.template):
-        print(f"Opening template blend file: {args.template}")
-        bpy.ops.wm.open_mainfile(filepath=args.template)
+        if args.template.lower().endswith('.blend'):
+            print(f"Opening template blend file: {args.template}")
+            bpy.ops.wm.open_mainfile(filepath=args.template)
+        elif args.template.lower().endswith('.fbx'):
+            print(f"Importing template FBX file: {args.template}")
+            clear_scene_except_templates([])
+            bpy.ops.import_scene.fbx(filepath=args.template)
+        elif args.template.lower().endswith('.obj'):
+            print(f"Importing template OBJ file: {args.template}")
+            clear_scene_except_templates([])
+            try:
+                bpy.ops.wm.obj_import(filepath=args.template)
+            except AttributeError:
+                bpy.ops.import_scene.obj(filepath=args.template)
+        else:
+            raise ValueError(f"Unsupported template file format: {args.template}")
         
         # Discover template mesh and armature
         template_meshes = [obj for obj in bpy.data.objects if obj.type == 'MESH']
         armatures = [obj for obj in bpy.data.objects if obj.type == 'ARMATURE']
         
         if not template_meshes:
-            raise ValueError(f"No mesh objects found in template blend file: {args.template}")
+            raise ValueError(f"No mesh objects found in template file: {args.template}")
             
         target_mesh = template_meshes[0]
         if armatures:
