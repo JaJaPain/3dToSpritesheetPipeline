@@ -1,6 +1,7 @@
 import os
 import sys
 from PIL import Image
+from typing import Union, List
 
 # Set environment variables before importing torch/trellis modules
 os.environ['SPCONV_ALGO'] = 'native'
@@ -34,26 +35,36 @@ def get_pipeline():
         print("TrellisImageTo3DPipeline initialized successfully.")
     return _pipeline
 
-def generate_mesh_from_turnaround(image_path: str, output_glb_path: str) -> bool:
+def generate_mesh_from_turnaround(image_path: Union[str, List[str]], output_glb_path: str) -> bool:
     """
-    Ingests a front turnaround illustration and outputs a textured 3D mesh (.glb).
+    Ingests one or more turnaround illustrations and outputs a textured 3D mesh (.glb).
     """
     try:
-        # Load and process the input image
-        if not os.path.exists(image_path):
-            print(f"Error: Source image not found at {image_path}")
-            return False
-
-        image = Image.open(image_path)
+        pipeline = get_pipeline()
+        
+        if isinstance(image_path, list):
+            # Load and process multiple input images
+            images = []
+            for path in image_path:
+                if not os.path.exists(path):
+                    print(f"Error: Source image not found at {path}")
+                    return False
+                images.append(Image.open(path))
+            print(f"Running multi-image TRELLIS inference on {image_path}...")
+            outputs = pipeline.run_multi_image(images, seed=1)
+        else:
+            # Load and process a single input image
+            if not os.path.exists(image_path):
+                print(f"Error: Source image not found at {image_path}")
+                return False
+            image = Image.open(image_path)
+            print(f"Running TRELLIS inference on {image_path}...")
+            outputs = pipeline.run(image, seed=1)
         
         # Create output directory if it doesn't exist
         output_dir = os.path.dirname(os.path.abspath(output_glb_path))
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
-
-        pipeline = get_pipeline()
-        print(f"Running TRELLIS inference on {image_path}...")
-        outputs = pipeline.run(image, seed=1)
 
         print("Generating GLB mesh from outputs...")
         glb = postprocessing_utils.to_glb(
