@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Project-specific temporary installers
+temp_installers/
+
+# Large 3D geometry & rendering outputs (large files)
+workspace/01_raw_3d/
+workspace/02_optimized_fbx/
+workspace/03_frames/
+workspace/04_spritesheets/
+*.glb
+*.fbx
+*.obj
+*.ply
+*.mp4
+*.blend.bak
+
+# Large ML weights and caches
+models/
+weights/
+.cache/
+hf_home/
+.huggingface/
+
+# Python build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.lib
+*.exp
