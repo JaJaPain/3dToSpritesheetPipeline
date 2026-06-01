@@ -175,30 +175,117 @@ def segment_faces_by_body_region(obj):
 
 
 # ---------------------------------------------------------------------------
-# STEP: Create new UV map with quadrant layout
+# STEP: Duplicate mesh to create bake source
 # ---------------------------------------------------------------------------
-def create_quadrant_uv_map(obj, segments):
+def duplicate_as_bake_source(obj):
     """
-    Creates a NEW UV map called 'QuadrantUV' on the mesh.
-    Each body region's faces are Smart UV Projected and placed into
-    their designated quadrant.
-
-    The original UV map (used by the TRELLIS texture) is left untouched.
+    Duplicates the mesh object. The duplicate keeps the original UV layout
+    and material, and will be used as the color source for baking.
+    Returns the duplicate (source) object.
     """
-    mesh = obj.data
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.duplicate()
+    source_obj = bpy.context.view_layer.objects.active
+    source_obj.name = "BakeSource"
+    print(f"  Created bake source: '{source_obj.name}'")
+    return source_obj
 
-    # Rename the original UV map so we can reference it later
-    if mesh.uv_layers:
-        mesh.uv_layers[0].name = "OriginalUV"
-        print(f"  Renamed original UV map to 'OriginalUV'")
 
-    # Create the new quadrant UV map
-    new_uv = mesh.uv_layers.new(name="QuadrantUV")
-    # Set the NEW UV map as active (this is where the bake will write)
-    mesh.uv_layers.active = new_uv
-    print(f"  Created new UV map 'QuadrantUV' (active for bake output)")
+# ---------------------------------------------------------------------------
+# STEP: Set up emission material on source for baking
+# ---------------------------------------------------------------------------
+def setup_source_emission_material(source_obj):
+    """
+    Replaces the source object's material with a simple Emission shader
+    that reads the original TRELLIS texture via the original UV map.
+    This ensures the bake captures the correct colors.
+    """
+    mesh = source_obj.data
 
-    # UV unwrap each segment into its quadrant
+    # Find the original texture image
+    source_image = None
+    for mat in mesh.materials:
+        if mat and mat.node_tree:
+            for node in mat.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image:
+                    source_image = node.image
+                    print(f"  Source texture: '{node.image.name}' "
+                          f"({node.image.size[0]}x{node.image.size[1]})")
+                    break
+        if source_image:
+            break
+
+    # Find the original UV layer name
+    original_uv_name = mesh.uv_layers[0].name if mesh.uv_layers else "UVMap"
+    print(f"  Source UV layer: '{original_uv_name}'")
+
+    # Build emission material
+    mesh.materials.clear()
+    mat = bpy.data.materials.new(name="SourceEmission")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    for node in nodes:
+        nodes.remove(node)
+
+    output_node = nodes.new(type='ShaderNodeOutputMaterial')
+    output_node.location = (600, 0)
+
+    emit_node = nodes.new(type='ShaderNodeEmission')
+    emit_node.location = (300, 0)
+    emit_node.inputs['Strength'].default_value = 1.0
+    links.new(emit_node.outputs['Emission'], output_node.inputs['Surface'])
+
+    if source_image:
+        tex_node = nodes.new(type='ShaderNodeTexImage')
+        tex_node.location = (-100, 0)
+        tex_node.image = source_image
+        links.new(tex_node.outputs['Color'], emit_node.inputs['Color'])
+
+        uv_node = nodes.new(type='ShaderNodeUVMap')
+        uv_node.location = (-400, 0)
+        uv_node.uv_map = original_uv_name
+        links.new(uv_node.outputs['UV'], tex_node.inputs['Vector'])
+        print(f"  Emission material reads '{source_image.name}' via '{original_uv_name}'")
+    elif mesh.color_attributes:
+        vcol_node = nodes.new(type='ShaderNodeVertexColor')
+        vcol_node.location = (-100, 0)
+        vcol_node.layer_name = mesh.color_attributes[0].name
+        links.new(vcol_node.outputs['Color'], emit_node.inputs['Color'])
+        print(f"  Emission material reads vertex colors '{mesh.color_attributes[0].name}'")
+    else:
+        print("  WARNING: No color source found on source mesh.")
+
+    mesh.materials.append(mat)
+
+
+# ---------------------------------------------------------------------------
+# STEP: Create fresh quadrant UV layout on the target mesh
+# ---------------------------------------------------------------------------
+def create_quadrant_uv_on_target(target_obj, segments):
+    """
+    Removes all existing UV layers on the target and creates a single fresh
+    UV layer. For each body segment, runs Smart UV Project and places the
+    result into the designated quadrant.
+
+    This is done on the TARGET object (which will receive the baked texture).
+    The SOURCE object (with original UVs) is untouched.
+    """
+    mesh = target_obj.data
+
+    # Remove ALL existing UV layers — start completely fresh
+    while mesh.uv_layers:
+        mesh.uv_layers.remove(mesh.uv_layers[0])
+
+    # Create one fresh UV layer
+    uv_layer = mesh.uv_layers.new(name="UVMap")
+    mesh.uv_layers.active = uv_layer
+    print(f"  Created fresh UV layer 'UVMap'")
+
+    # Smart UV Project each segment into its quadrant
     for region_name, face_indices in segments.items():
         if not face_indices:
             print(f"  Segment '{region_name}' has no faces — skipping.")
@@ -207,72 +294,47 @@ def create_quadrant_uv_map(obj, segments):
         quadrant = QUADRANTS[region_name]
         offset_u, offset_v = quadrant["offset"]
         scale = quadrant["scale"]
+        face_index_set = set(face_indices)
 
-        # Enter edit mode, select only this segment's faces
+        # --- Enter Edit Mode, select segment faces ---
         bpy.ops.object.select_all(action='DESELECT')
-        obj.select_set(True)
-        bpy.context.view_layer.objects.active = obj
-
+        target_obj.select_set(True)
+        bpy.context.view_layer.objects.active = target_obj
         bpy.ops.object.mode_set(mode='EDIT')
-
-        # CRITICAL: Force QuadrantUV as active INSIDE edit mode
-        # Entering edit mode can reset the active UV layer
-        for i, uv_layer in enumerate(mesh.uv_layers):
-            if uv_layer.name == "QuadrantUV":
-                mesh.uv_layers.active_index = i
-                break
-
         bpy.ops.mesh.select_all(action='DESELECT')
 
         bm = bmesh.from_edit_mesh(mesh)
         bm.faces.ensure_lookup_table()
-
-        face_index_set = set(face_indices)
         for face in bm.faces:
             face.select = face.index in face_index_set
-
         bmesh.update_edit_mesh(mesh)
 
-        # Smart UV Project with WIDE angle (89° ≈ 1.553 rad) to merge more
-        # faces into larger connected islands. The wider the angle, the fewer
-        # seam cuts, giving fewer but larger UV islands = better texture quality.
-        bpy.ops.uv.smart_project(angle_limit=1.553, island_margin=0.005)
+        # --- Smart UV Project on selected faces ---
+        # High angle limit creates fewer, larger islands
+        bpy.ops.uv.smart_project(angle_limit=1.22, island_margin=0.003)
 
-        # Normalize and place UVs into the target quadrant
+        # --- Normalize and place into quadrant ---
         bm = bmesh.from_edit_mesh(mesh)
         bm.faces.ensure_lookup_table()
-
-        # Explicitly get the QuadrantUV layer by NAME, not .active
-        uv_lay = None
-        for layer in bm.loops.layers.uv:
-            if layer.name == "QuadrantUV":
-                uv_lay = layer
-                break
-        if uv_lay is None:
-            uv_lay = bm.loops.layers.uv.active
+        uv_lay = bm.loops.layers.uv.active
 
         if uv_lay is None:
-            print(f"  WARNING: No UV layer found for '{region_name}'")
+            print(f"  WARNING: No UV layer for '{region_name}'")
             bpy.ops.object.mode_set(mode='OBJECT')
             continue
 
-        # Collect UV coords for selected faces
-        selected_uvs = []
+        # Collect UV bounds for this segment
+        min_u, max_u = float('inf'), float('-inf')
+        min_v, max_v = float('inf'), float('-inf')
         for face in bm.faces:
             if face.index in face_index_set:
                 for loop in face.loops:
-                    selected_uvs.append(loop[uv_lay].uv)
+                    u, v = loop[uv_lay].uv
+                    min_u = min(min_u, u)
+                    max_u = max(max_u, u)
+                    min_v = min(min_v, v)
+                    max_v = max(max_v, v)
 
-        if not selected_uvs:
-            print(f"  WARNING: No UV data for '{region_name}'")
-            bpy.ops.object.mode_set(mode='OBJECT')
-            continue
-
-        # Find bounds
-        min_u = min(uv.x for uv in selected_uvs)
-        max_u = max(uv.x for uv in selected_uvs)
-        min_v = min(uv.y for uv in selected_uvs)
-        max_v = max(uv.y for uv in selected_uvs)
         range_u = max_u - min_u
         range_v = max_v - min_v
 
@@ -289,106 +351,61 @@ def create_quadrant_uv_map(obj, segments):
         bmesh.update_edit_mesh(mesh)
         bpy.ops.object.mode_set(mode='OBJECT')
 
-        print(f"  Unwrapped '{region_name}' → quadrant ({offset_u:.2f}, {offset_v:.2f})")
+        print(f"  UV'd '{region_name}' ({len(face_indices)} faces) → "
+              f"quadrant ({offset_u:.2f}, {offset_v:.2f})")
 
 
 # ---------------------------------------------------------------------------
-# STEP: Self-bake from OriginalUV → QuadrantUV
+# STEP: Two-object bake (source → target)
 # ---------------------------------------------------------------------------
-def self_bake_uv_transfer(obj, output_image_path, tex_size=2048):
+def bake_texture_transfer(source_obj, target_obj, output_image_path, tex_size=2048):
     """
-    Sets up an Emission material that reads the TRELLIS texture via the
-    ORIGINAL UV map, then bakes onto a new image using the QUADRANT UV map.
+    Industry-standard two-object bake:
+      - SOURCE has original UV + original TRELLIS texture (emission material)
+      - TARGET has fresh quadrant UV layout + empty bake target image
+      - Blender ray-casts from target surface to source surface, sampling
+        the source's emission color, and writes it to the target's bake image.
 
-    This is a SELF-BAKE (single object, no ray-casting between objects).
-    The bake reads from one UV set and writes to another.
+    After baking, the source is deleted and the target's material is updated
+    to use the baked texture.
     """
-    print("Setting up self-bake UV transfer...")
+    print("Setting up two-object bake...")
 
-    mesh = obj.data
-
-    # --- Find the original TRELLIS texture ---
-    source_image = None
-    for mat in obj.data.materials:
-        if mat and mat.node_tree:
-            for node in mat.node_tree.nodes:
-                if node.type == 'TEX_IMAGE' and node.image:
-                    source_image = node.image
-                    print(f"  Found source texture: '{node.image.name}' "
-                          f"({node.image.size[0]}x{node.image.size[1]})")
-                    break
-        if source_image:
-            break
-
-    if not source_image:
-        print("  WARNING: No source texture found! Checking vertex colors...")
-
-    # --- Build emission material that reads from OriginalUV ---
-    obj.data.materials.clear()
-    mat = bpy.data.materials.new(name="BakeTransferMaterial")
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-
-    # Clear default nodes
-    for node in nodes:
-        nodes.remove(node)
-
-    output_node = nodes.new(type='ShaderNodeOutputMaterial')
-    output_node.location = (600, 0)
-
-    emit_node = nodes.new(type='ShaderNodeEmission')
-    emit_node.location = (300, 0)
-    emit_node.inputs['Strength'].default_value = 1.0
-    links.new(emit_node.outputs['Emission'], output_node.inputs['Surface'])
-
-    if source_image:
-        # Texture node reads from the ORIGINAL UV map
-        tex_node = nodes.new(type='ShaderNodeTexImage')
-        tex_node.location = (-100, 0)
-        tex_node.image = source_image
-        links.new(tex_node.outputs['Color'], emit_node.inputs['Color'])
-
-        # UV Map node explicitly pointing to OriginalUV
-        uv_node = nodes.new(type='ShaderNodeUVMap')
-        uv_node.location = (-400, 0)
-        uv_node.uv_map = "OriginalUV"
-        links.new(uv_node.outputs['UV'], tex_node.inputs['Vector'])
-
-        print(f"  Emission material: texture '{source_image.name}' via 'OriginalUV'")
-    elif obj.data.color_attributes:
-        vcol_node = nodes.new(type='ShaderNodeVertexColor')
-        vcol_node.location = (-100, 0)
-        vcol_node.layer_name = obj.data.color_attributes[0].name
-        links.new(vcol_node.outputs['Color'], emit_node.inputs['Color'])
-        print(f"  Emission material: vertex colors '{obj.data.color_attributes[0].name}'")
-    else:
-        print("  WARNING: No color source found. Bake will produce flat white.")
+    target_mesh = target_obj.data
 
     # --- Create the bake target image ---
     bake_img_name = "BakedTexture"
     if bake_img_name in bpy.data.images:
         bpy.data.images.remove(bpy.data.images[bake_img_name])
-    bake_image = bpy.data.images.new(bake_img_name, width=tex_size, height=tex_size,
-                                      alpha=True)
+    bake_image = bpy.data.images.new(
+        bake_img_name, width=tex_size, height=tex_size, alpha=True
+    )
 
-    # Add a SECOND image texture node for the bake target and make it ACTIVE
-    bake_target_node = nodes.new(type='ShaderNodeTexImage')
-    bake_target_node.location = (-100, -300)
-    bake_target_node.image = bake_image
-    # Do NOT connect it to anything — it's just the bake target
-    nodes.active = bake_target_node
-    bake_target_node.select = True
+    # --- Set up target material with bake target image ---
+    target_obj.data.materials.clear()
+    tgt_mat = bpy.data.materials.new(name="BakeTargetMaterial")
+    tgt_mat.use_nodes = True
+    tgt_nodes = tgt_mat.node_tree.nodes
+    tgt_links = tgt_mat.node_tree.links
 
-    obj.data.materials.append(mat)
+    for node in tgt_nodes:
+        tgt_nodes.remove(node)
 
-    # --- Ensure QuadrantUV is the ACTIVE UV map (bake writes here) ---
-    for uv_layer in mesh.uv_layers:
-        if uv_layer.name == "QuadrantUV":
-            uv_layer.active_render = True
-            mesh.uv_layers.active = uv_layer
-            print(f"  Active UV for bake output: 'QuadrantUV'")
-            break
+    # Output + Principled BSDF (placeholder — bake target image is what matters)
+    tgt_output = tgt_nodes.new(type='ShaderNodeOutputMaterial')
+    tgt_output.location = (300, 0)
+    tgt_bsdf = tgt_nodes.new(type='ShaderNodeBsdfPrincipled')
+    tgt_bsdf.location = (0, 0)
+    tgt_links.new(tgt_bsdf.outputs['BSDF'], tgt_output.inputs['Surface'])
+
+    # Bake target image node — must be ACTIVE (selected) and NOT connected
+    tgt_img_node = tgt_nodes.new(type='ShaderNodeTexImage')
+    tgt_img_node.location = (-300, -200)
+    tgt_img_node.image = bake_image
+    tgt_nodes.active = tgt_img_node
+    tgt_img_node.select = True
+
+    target_obj.data.materials.append(tgt_mat)
 
     # --- Configure Cycles ---
     bpy.context.scene.render.engine = 'CYCLES'
@@ -414,16 +431,19 @@ def self_bake_uv_transfer(obj, output_image_path, tex_size=2048):
     except AttributeError:
         pass
 
-    # --- Self-bake (NOT selected-to-active) ---
+    # --- Selected-to-Active bake ---
     bake = bpy.context.scene.render.bake
-    bake.use_selected_to_active = False   # <-- KEY: self-bake!
-    bake.margin = 8
+    bake.use_selected_to_active = True   # KEY: two-object bake!
+    bake.cage_extrusion = 0.05           # Ray-cast distance
+    bake.margin = 16                     # Generous margin for filtering
 
+    # Select source, make target active
     bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
+    source_obj.select_set(True)    # SOURCE is "selected"
+    target_obj.select_set(True)    # TARGET is also selected
+    bpy.context.view_layer.objects.active = target_obj  # TARGET is "active"
 
-    print("  Baking EMIT (self-bake: OriginalUV → QuadrantUV)...")
+    print("  Baking EMIT (selected-to-active: source → target)...")
     bpy.ops.object.bake(type='EMIT')
 
     # --- Save baked texture ---
@@ -432,31 +452,34 @@ def self_bake_uv_transfer(obj, output_image_path, tex_size=2048):
     bake_image.save()
     print(f"  Baked texture saved to: {output_image_path}")
 
-    # --- Clean up: remove OriginalUV, keep only QuadrantUV ---
-    for uv_layer in list(mesh.uv_layers):
-        if uv_layer.name == "OriginalUV":
-            mesh.uv_layers.remove(uv_layer)
-            print("  Removed 'OriginalUV' — only 'QuadrantUV' remains")
-            break
+    # --- Delete source object ---
+    bpy.ops.object.select_all(action='DESELECT')
+    source_obj.select_set(True)
+    bpy.context.view_layer.objects.active = source_obj
+    bpy.ops.object.delete()
+    print("  Deleted bake source object")
 
-    # --- Update material to use the baked texture with QuadrantUV ---
-    for node in nodes:
-        nodes.remove(node)
+    # --- Reload the saved image from disk for clean FBX export ---
+    saved_image = bpy.data.images.load(output_image_path)
 
-    output_node = nodes.new(type='ShaderNodeOutputMaterial')
-    output_node.location = (300, 0)
+    # --- Update target material to use baked texture ---
+    for node in tgt_nodes:
+        tgt_nodes.remove(node)
 
-    bsdf_node = nodes.new(type='ShaderNodeBsdfPrincipled')
+    out_node = tgt_nodes.new(type='ShaderNodeOutputMaterial')
+    out_node.location = (300, 0)
+
+    bsdf_node = tgt_nodes.new(type='ShaderNodeBsdfPrincipled')
     bsdf_node.location = (0, 0)
 
-    tex_node = nodes.new(type='ShaderNodeTexImage')
+    tex_node = tgt_nodes.new(type='ShaderNodeTexImage')
     tex_node.location = (-300, 0)
-    tex_node.image = bake_image
+    tex_node.image = saved_image
 
-    links.new(bsdf_node.outputs['BSDF'], output_node.inputs['Surface'])
-    links.new(tex_node.outputs['Color'], bsdf_node.inputs['Base Color'])
+    tgt_links.new(bsdf_node.outputs['BSDF'], out_node.inputs['Surface'])
+    tgt_links.new(tex_node.outputs['Color'], bsdf_node.inputs['Base Color'])
 
-    print("  Material updated to use baked texture with QuadrantUV")
+    print("  Target material updated with baked texture")
 
 
 # ---------------------------------------------------------------------------
@@ -491,8 +514,8 @@ def subdivide_mesh(obj, subdiv_levels=1):
 # ---------------------------------------------------------------------------
 # STEP: Export
 # ---------------------------------------------------------------------------
-def export_fbx(obj, output_path):
-    """Exports the given mesh object as FBX."""
+def export_fbx(obj, output_path, tex_path):
+    """Exports the given mesh object as FBX with embedded texture."""
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
     bpy.ops.object.select_all(action='DESELECT')
@@ -506,8 +529,11 @@ def export_fbx(obj, output_path):
         use_mesh_modifiers=True,
         add_leaf_bones=False,
         bake_anim=False,
+        path_mode='COPY',
+        embed_textures=True,
     )
     print(f"FBX exported to: {output_path}")
+    print(f"  (texture '{tex_path}' embedded in FBX)")
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +568,7 @@ def main():
     args = parser.parse_args(script_args)
 
     print("=" * 60)
-    print("Blender Headless: Silhouette-Preserving UV Remapping")
+    print("Blender Headless: Two-Object Bake UV Remapping")
     print(f"  Input:   {args.input}")
     print(f"  Output:  {args.output}")
     print(f"  Target faces: {args.decimate_faces}")
@@ -560,31 +586,38 @@ def main():
     print("\n--- Decimating mesh ---")
     decimate_mesh(mesh_obj, args.decimate_faces)
 
-    # Step 4: Segment faces by body region
+    # Step 4: Duplicate BEFORE any UV changes — this becomes the bake source
+    print("\n--- Creating bake source (duplicate with original UV + texture) ---")
+    source_obj = duplicate_as_bake_source(mesh_obj)
+
+    # Step 5: Set up emission material on source
+    setup_source_emission_material(source_obj)
+
+    # Step 6: Segment faces by body region (on the target)
     print("\n--- Segmenting faces by body region ---")
     segments = segment_faces_by_body_region(mesh_obj)
 
-    # Step 5: Create new QuadrantUV map (keeps OriginalUV intact)
-    print("\n--- Creating quadrant UV layout ---")
-    create_quadrant_uv_map(mesh_obj, segments)
+    # Step 7: Create fresh quadrant UV layout on target
+    print("\n--- Creating quadrant UV layout on target ---")
+    create_quadrant_uv_on_target(mesh_obj, segments)
 
-    # Step 6: Self-bake from OriginalUV → QuadrantUV
-    print("\n--- Baking texture (self-bake UV transfer) ---")
+    # Step 8: Two-object bake (source → target)
+    print("\n--- Baking texture (two-object: source → target) ---")
     output_dir = os.path.dirname(os.path.abspath(args.output))
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.basename(args.output).split('.')[0]
     tex_path = os.path.join(output_dir, f"{base_name}_tex.png")
 
-    self_bake_uv_transfer(mesh_obj, tex_path, args.tex_size)
+    bake_texture_transfer(source_obj, mesh_obj, tex_path, args.tex_size)
 
-    # Step 7: Optional post-bake subdivision
+    # Step 9: Optional post-bake subdivision
     if args.subdiv_levels > 0:
         print("\n--- Applying post-bake subdivision ---")
         subdivide_mesh(mesh_obj, args.subdiv_levels)
 
-    # Step 8: Export
+    # Step 10: Export
     print("\n--- Exporting final FBX ---")
-    export_fbx(mesh_obj, args.output)
+    export_fbx(mesh_obj, args.output, tex_path)
 
     final_faces = len(mesh_obj.data.polygons)
     print("\n" + "=" * 60)
