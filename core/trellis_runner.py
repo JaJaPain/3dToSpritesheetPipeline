@@ -70,8 +70,8 @@ def generate_mesh_from_turnaround(image_path: Union[str, List[str]], output_glb_
         glb = postprocessing_utils.to_glb(
             outputs['gaussian'][0],
             outputs['mesh'][0],
-            simplify=0.95,      # Simplify mesh (ratio of triangles to remove)
-            texture_size=1024   # Texture resolution
+            simplify=0.5,       # Keep more geometry (0.95 was removing 95% of triangles!)
+            texture_size=2048   # Higher texture resolution for better bake quality
         )
         
         print(f"Exporting GLB to {output_glb_path}...")

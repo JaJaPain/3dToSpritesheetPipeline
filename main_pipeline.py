@@ -97,21 +97,15 @@ def main():
         
     # STAGE 2: Blender Decimation & UV Projection Bake
     if not args.skip_bake:
-        # Check if unrigged template exists, if not generate it
-        if not os.path.exists(unrigged_template):
-            print(f"Unrigged template {unrigged_template} not found. Generating...")
-            cmd_gen = [BLENDER_EXE, "-b", "-P", "core/generate_base_template.py", "--", unrigged_template]
-            if not run_command(cmd_gen, "Generating unrigged humanoid base mesh"):
-                sys.exit(1)
-                
-        # Run decimate and bake texture script
+        # Run decimate, UV segmentation, and bake texture script
+        # No template needed — the TRELLIS mesh itself is preserved and UV-remapped
         cmd_bake = [
             BLENDER_EXE, "-b", "-P", "core/blender_headless_core.py", "--",
             "--input", glb_output,
-            "--template", unrigged_template,
-            "--output", fbx_output
+            "--output", fbx_output,
+            "--decimate-faces", "50000"
         ]
-        if not run_command(cmd_bake, "Executing decimation and Cycles baking"):
+        if not run_command(cmd_bake, "Executing decimation, UV segmentation, and Cycles baking"):
             sys.exit(1)
             
         print("\n=================================================================")
