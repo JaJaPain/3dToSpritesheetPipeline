@@ -285,7 +285,33 @@ def create_quadrant_uv_on_target(target_obj, segments):
     mesh.uv_layers.active = uv_layer
     print(f"  Created fresh UV layer 'UVMap'")
 
-    # Smart UV Project each segment into its quadrant
+    # First pass: mark seams at segment boundaries so unwrap respects them
+    bpy.ops.object.select_all(action='DESELECT')
+    target_obj.select_set(True)
+    bpy.context.view_layer.objects.active = target_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    bm = bmesh.from_edit_mesh(mesh)
+    bm.faces.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+
+    # Build face→region lookup
+    face_region = {}
+    for region_name, face_indices in segments.items():
+        for fi in face_indices:
+            face_region[fi] = region_name
+
+    # Mark seams where adjacent faces belong to different regions
+    for edge in bm.edges:
+        if len(edge.link_faces) == 2:
+            f0, f1 = edge.link_faces
+            if face_region.get(f0.index) != face_region.get(f1.index):
+                edge.seam = True
+
+    bmesh.update_edit_mesh(mesh)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Second pass: unwrap each segment and place into its quadrant
     for region_name, face_indices in segments.items():
         if not face_indices:
             print(f"  Segment '{region_name}' has no faces — skipping.")
@@ -309,9 +335,10 @@ def create_quadrant_uv_on_target(target_obj, segments):
             face.select = face.index in face_index_set
         bmesh.update_edit_mesh(mesh)
 
-        # --- Smart UV Project on selected faces ---
-        # High angle limit creates fewer, larger islands
-        bpy.ops.uv.smart_project(angle_limit=1.22, island_margin=0.003)
+        # --- Unwrap selected faces ---
+        # Standard unwrap follows mesh connectivity → far fewer islands than smart_project
+        # The seams we marked above ensure segments don't bleed into each other
+        bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.02)
 
         # --- Normalize and place into quadrant ---
         bm = bmesh.from_edit_mesh(mesh)
@@ -435,7 +462,7 @@ def bake_texture_transfer(source_obj, target_obj, output_image_path, tex_size=20
     bake = bpy.context.scene.render.bake
     bake.use_selected_to_active = True   # KEY: two-object bake!
     bake.cage_extrusion = 0.05           # Ray-cast distance
-    bake.margin = 16                     # Generous margin for filtering
+    bake.margin = 4                      # Must be < island_margin (~20px)
 
     # Select source, make target active
     bpy.ops.object.select_all(action='DESELECT')
@@ -459,7 +486,14 @@ def bake_texture_transfer(source_obj, target_obj, output_image_path, tex_size=20
     bpy.ops.object.delete()
     print("  Deleted bake source object")
 
-    # --- Reload the saved image from disk for clean FBX export ---
+    # --- Clean up ALL orphan data to prevent FBX exporter confusion ---
+    # Remove the in-memory bake image (we'll reload from disk)
+    bpy.data.images.remove(bake_image)
+    # Purge all orphan datablocks (materials, images, meshes from source)
+    bpy.ops.outliner.orphans_purge(do_recursive=True)
+    print("  Purged orphan datablocks")
+
+    # --- Reload the saved image from disk (only image in scene) ---
     saved_image = bpy.data.images.load(output_image_path)
 
     # --- Update target material to use baked texture ---
@@ -467,19 +501,26 @@ def bake_texture_transfer(source_obj, target_obj, output_image_path, tex_size=20
         tgt_nodes.remove(node)
 
     out_node = tgt_nodes.new(type='ShaderNodeOutputMaterial')
-    out_node.location = (300, 0)
+    out_node.location = (400, 0)
 
     bsdf_node = tgt_nodes.new(type='ShaderNodeBsdfPrincipled')
-    bsdf_node.location = (0, 0)
+    bsdf_node.location = (100, 0)
 
     tex_node = tgt_nodes.new(type='ShaderNodeTexImage')
     tex_node.location = (-300, 0)
     tex_node.image = saved_image
 
+    # Explicit UV Map node — forces the texture to use 'UVMap' even after
+    # FBX round-trip, instead of relying on Blender's default UV selection
+    uv_node = tgt_nodes.new(type='ShaderNodeUVMap')
+    uv_node.location = (-500, -150)
+    uv_node.uv_map = "UVMap"
+
+    tgt_links.new(uv_node.outputs['UV'], tex_node.inputs['Vector'])
     tgt_links.new(bsdf_node.outputs['BSDF'], out_node.inputs['Surface'])
     tgt_links.new(tex_node.outputs['Color'], bsdf_node.inputs['Base Color'])
 
-    print("  Target material updated with baked texture")
+    print("  Target material updated with baked texture + explicit UV Map node")
 
 
 # ---------------------------------------------------------------------------
